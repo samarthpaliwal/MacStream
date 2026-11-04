@@ -20,6 +20,9 @@ final class InputInjector {
     private var clickCount: Int64 = 1
     private var modifierFlags: CGEventFlags = []
     private var magnifyAccumulator: Double = 1
+    /// Modifier keys this injector pressed itself (as real key events) so
+    /// system shortcuts such as ⌃← for Spaces see a genuine modifier press.
+    private var heldModifierKeys: Set<UInt16> = []
 
     var eventsInjected = 0
     /// `MACSTREAM_LOG_INPUT=1`: once a second, log what arrived and where the cursor is.
@@ -103,14 +106,28 @@ final class InputInjector {
             }
 
         case .keyDown(let keyCode, let modifiers, _):
-            modifierFlags = Self.flags(modifiers)
-            if KeyCodeMap.isModifier(keyCode) { modifierFlags.insert(Self.flag(forModifierKey: keyCode)) }
-            key(keyCode, down: true)
+            if KeyCodeMap.isModifier(keyCode) {
+                modifierFlags = Self.flags(modifiers).union(Self.flag(forModifierKey: keyCode))
+                heldModifierKeys.insert(keyCode)
+                key(keyCode, down: true)
+            } else {
+                // Press any modifier the event carries that is not already down,
+                // as a real modifier key event, before the key itself.
+                pressMissingModifiers(for: modifiers)
+                modifierFlags = Self.flags(modifiers)
+                key(keyCode, down: true)
+            }
 
         case .keyUp(let keyCode, let modifiers):
-            modifierFlags = Self.flags(modifiers)
-            if KeyCodeMap.isModifier(keyCode) { modifierFlags.remove(Self.flag(forModifierKey: keyCode)) }
-            key(keyCode, down: false)
+            if KeyCodeMap.isModifier(keyCode) {
+                modifierFlags = Self.flags(modifiers).subtracting(Self.flag(forModifierKey: keyCode))
+                heldModifierKeys.remove(keyCode)
+                key(keyCode, down: false)
+            } else {
+                modifierFlags = Self.flags(modifiers)
+                key(keyCode, down: false)
+                releaseSyntheticModifiers()
+            }
 
         case .modifiersChanged(let modifiers):
             modifierFlags = Self.flags(modifiers)
@@ -203,6 +220,39 @@ final class InputInjector {
         guard let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: down) else { return }
         event.flags = modifierFlags
         post(event, describe: down ? "key \(keyCode) down flags=\(modifierFlags.rawValue)" : nil)
+    }
+
+    /// Modifier key events the client did not send itself (latched or
+    /// remapped modifiers, gesture shortcuts). Released after the key up.
+    private var syntheticModifierKeys: [UInt16] = []
+
+    private func pressMissingModifiers(for modifiers: KeyModifiers) {
+        let wanted: [(KeyModifiers, UInt16)] = [(.control, KeyCodeMap.control), (.option, KeyCodeMap.option), (.shift, KeyCodeMap.shift), (.command, KeyCodeMap.command)]
+        for (modifier, code) in wanted where modifiers.contains(modifier) {
+            let alreadyDown = heldModifierKeys.contains(code) || heldModifierKeys.contains(Self.rightVariant(of: code))
+            guard !alreadyDown else { continue }
+            modifierFlags.insert(Self.flag(forModifierKey: code))
+            key(code, down: true)
+            syntheticModifierKeys.append(code)
+        }
+    }
+
+    private func releaseSyntheticModifiers() {
+        for code in syntheticModifierKeys.reversed() {
+            modifierFlags.remove(Self.flag(forModifierKey: code))
+            key(code, down: false)
+        }
+        syntheticModifierKeys.removeAll()
+    }
+
+    private static func rightVariant(of code: UInt16) -> UInt16 {
+        switch code {
+        case KeyCodeMap.control: return KeyCodeMap.rightControl
+        case KeyCodeMap.option: return KeyCodeMap.rightOption
+        case KeyCodeMap.shift: return KeyCodeMap.rightShift
+        case KeyCodeMap.command: return KeyCodeMap.rightCommand
+        default: return code
+        }
     }
 
     private func tap(_ keyCode: UInt16, flags: CGEventFlags) {
