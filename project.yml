@@ -1,0 +1,109 @@
+# XcodeGen spec. Regenerate the project after adding files:  xcodegen generate
+name: MacStream
+options:
+  bundleIdPrefix: com.samarth.macstream
+  deploymentTarget:
+    macOS: "14.0"
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+    # Set to your Personal Team ID once Xcode has your Apple ID (see README).
+    DEVELOPMENT_TEAM: T84PUC528P
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+packages:
+  StreamCore:
+    path: Packages/StreamCore
+
+targets:
+  MacHost:
+    type: application
+    platform: macOS
+    sources:
+      - path: MacHost
+    dependencies:
+      - package: StreamCore
+    entitlements:
+      path: MacHost/MacHost.entitlements
+      properties:
+        # Not sandboxed: CGEvent injection and unrestricted local networking
+        # are simpler outside the App Sandbox, and this app is never App Store bound.
+        com.apple.security.app-sandbox: false
+    info:
+      path: MacHost/Info.plist
+      properties:
+        CFBundleDisplayName: MacStream
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.utilities
+        NSLocalNetworkUsageDescription: MacStream streams your screen to your iPad over the local network.
+        NSBonjourServices:
+          - _macstream._tcp
+        NSHumanReadableCopyright: ""
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samarth.macstream.host
+        PRODUCT_NAME: MacStream
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_HIDPI_IMAGES: YES
+        SWIFT_OBJC_BRIDGING_HEADER: MacHost/Display/CGVirtualDisplayPrivate.h
+
+  PadClient:
+    type: application
+    platform: iOS
+    sources:
+      - path: PadClient
+    dependencies:
+      - package: StreamCore
+    info:
+      path: PadClient/Info.plist
+      properties:
+        CFBundleDisplayName: MacStream
+        NSLocalNetworkUsageDescription: MacStream looks for your Mac on the local network and streams its screen to this iPad.
+        NSBonjourServices:
+          - _macstream._tcp
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samarth.macstream.client
+        PRODUCT_NAME: MacStream
+        TARGETED_DEVICE_FAMILY: "2"
+        SUPPORTS_MACCATALYST: NO
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+
+schemes:
+  MacHost:
+    build:
+      targets:
+        MacHost: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: StreamCore/StreamCoreTests
+  PadClient:
+    build:
+      targets:
+        PadClient: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: StreamCore/StreamCoreTests

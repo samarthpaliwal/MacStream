@@ -1,0 +1,9 @@
+.build/
+DerivedData/
+build/
+xcuserdata/
+*.xcuserstate
+.DS_Store
+.swiftpm/
+Packages/StreamCore/.build/
+.claude/
