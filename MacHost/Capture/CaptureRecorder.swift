@@ -3,7 +3,7 @@ import Foundation
 
 /// Writes already-encoded sample buffers straight into a .mov (no re-encode),
 /// so the file shows exactly what the network would carry.
-final class CaptureRecorder {
+final class CaptureRecorder: @unchecked Sendable {
     let url: URL
     private let writer: AVAssetWriter
     private var input: AVAssetWriterInput?

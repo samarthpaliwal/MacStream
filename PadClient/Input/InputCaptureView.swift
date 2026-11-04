@@ -13,6 +13,13 @@ import UIKit
 final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
     var onEvent: ((InputEvent) -> Void)?
     var onToggleControls: (() -> Void)?
+    /// Modifiers latched from the on-screen strip; merged into every key and
+    /// click until `onModifiersConsumed` releases the one-shot ones.
+    var latchedModifiers: KeyModifiers = []
+    var onModifiersConsumed: (() -> Void)?
+    /// Flip two-finger scroll direction (macOS "natural scrolling" preference
+    /// also applies to injected events, so this lets either feel right).
+    var invertScroll = false
     /// Letterboxed video rect in this view's coordinates.
     var videoRectProvider: (() -> CGRect)?
 
@@ -42,6 +49,9 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
     private var dragging = false
     private var multiTouch = false
     private var lastPinchScale: CGFloat = 1
+    private var scrollStart = CGPoint.zero
+    private var edgeSwipeFired = false
+    private let edgeWidth: CGFloat = 28
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -76,6 +86,32 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(handleHover(_:)))
         hover.delegate = self
         addGestureRecognizer(hover)
+
+        // Three-finger swipes mirror the Mac trackpad: left/right switch
+        // Spaces, up is Mission Control, down is App Exposé.
+        for direction in [UISwipeGestureRecognizer.Direction.left, .right, .up, .down] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleThreeFingerSwipe(_:)))
+            swipe.direction = direction
+            swipe.numberOfTouchesRequired = 3
+            addGestureRecognizer(swipe)
+        }
+    }
+
+    // MARK: Key helpers
+
+    /// Key down + up with the latched modifiers merged in, then release one-shots.
+    func sendKey(_ code: UInt16, extra: KeyModifiers = [], characters: String? = nil) {
+        let modifiers = latchedModifiers.union(extra)
+        onEvent?(.keyDown(keyCode: code, modifiers: modifiers, characters: characters))
+        onEvent?(.keyUp(keyCode: code, modifiers: modifiers))
+        onModifiersConsumed?()
+    }
+
+    private func click(_ button: PointerButton, at point: NormalizedPoint) {
+        onEvent?(.pointerMove(point))
+        onEvent?(.pointerDown(point, button: button))
+        onEvent?(.pointerUp(point, button: button))
+        onModifiersConsumed?()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -136,10 +172,9 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         if dragging {
             onEvent?(.pointerMove(point))
             onEvent?(.pointerUp(point, button: .left))
+            onModifiersConsumed?()
         } else {
-            onEvent?(.pointerMove(point))
-            onEvent?(.pointerDown(point, button: .left))
-            onEvent?(.pointerUp(point, button: .left))
+            click(.left, at: point)
         }
         dragging = false
     }
@@ -170,10 +205,17 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
     }
 
     private func rightClick(at location: CGPoint) {
-        let point = normalized(location)
-        onEvent?(.pointerMove(point))
-        onEvent?(.pointerDown(point, button: .right))
-        onEvent?(.pointerUp(point, button: .right))
+        click(.right, at: normalized(location))
+    }
+
+    @objc private func handleThreeFingerSwipe(_ gesture: UISwipeGestureRecognizer) {
+        switch gesture.direction {
+        case .left: sendKey(KeyCodeMap.rightArrow, extra: [.control])   // next Space
+        case .right: sendKey(KeyCodeMap.leftArrow, extra: [.control])   // previous Space
+        case .up: sendKey(KeyCodeMap.upArrow, extra: [.control])        // Mission Control
+        case .down: sendKey(KeyCodeMap.downArrow, extra: [.control])    // App Exposé
+        default: break
+        }
     }
 
     @objc private func handleThreeFingerTap(_ gesture: UITapGestureRecognizer) {
@@ -181,11 +223,31 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
     }
 
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
-        guard gesture.state == .changed else { return }
-        let delta = gesture.translation(in: self)
-        gesture.setTranslation(.zero, in: self)
-        guard delta != .zero else { return }
-        onEvent?(.scroll(at: normalized(gesture.location(in: self)), deltaX: delta.x, deltaY: delta.y, precise: true))
+        switch gesture.state {
+        case .began:
+            scrollStart = gesture.location(in: self)
+            edgeSwipeFired = false
+        case .changed:
+            // A two-finger swipe that starts at the screen edge is Back / Forward
+            // (⌘[ / ⌘]), like Safari's edge swipe; macOS has no public way to
+            // post the real trackpad swipe gesture.
+            let total = gesture.translation(in: self)
+            let nearLeft = scrollStart.x < edgeWidth
+            let nearRight = scrollStart.x > bounds.width - edgeWidth
+            if !edgeSwipeFired, nearLeft || nearRight, abs(total.x) > 60, abs(total.x) > abs(total.y) * 2 {
+                edgeSwipeFired = true
+                sendKey(nearLeft ? KeyCodeMap.leftBracket : KeyCodeMap.rightBracket, extra: [.command])
+                return
+            }
+            if nearLeft || nearRight { return }
+            let delta = gesture.translation(in: self)
+            gesture.setTranslation(.zero, in: self)
+            guard delta != .zero else { return }
+            let sign: CGFloat = invertScroll ? -1 : 1
+            onEvent?(.scroll(at: normalized(gesture.location(in: self)), deltaX: delta.x * sign, deltaY: delta.y * sign, precise: true))
+        default:
+            break
+        }
     }
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
@@ -218,7 +280,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         for press in presses {
             if let key = press.key, let code = KeyCodeMap.macVirtualKey(forHIDUsage: key.keyCode.rawValue) {
                 let characters = key.characters.isEmpty ? nil : key.characters
-                onEvent?(.keyDown(keyCode: code, modifiers: Self.modifiers(key.modifierFlags), characters: characters))
+                onEvent?(.keyDown(keyCode: code, modifiers: Self.modifiers(key.modifierFlags).union(latchedModifiers), characters: characters))
             } else {
                 unhandled.insert(press)
             }
@@ -238,7 +300,8 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         var unhandled = Set<UIPress>()
         for press in presses {
             if let key = press.key, let code = KeyCodeMap.macVirtualKey(forHIDUsage: key.keyCode.rawValue) {
-                onEvent?(.keyUp(keyCode: code, modifiers: Self.modifiers(key.modifierFlags)))
+                onEvent?(.keyUp(keyCode: code, modifiers: Self.modifiers(key.modifierFlags).union(latchedModifiers)))
+                if !KeyCodeMap.isModifier(code) { onModifiersConsumed?() }
             } else {
                 unhandled.insert(press)
             }
@@ -262,42 +325,55 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
 
     func insertText(_ text: String) {
         if text == "\n" {
-            tapKey(KeyCodeMap.returnKey)
+            sendKey(KeyCodeMap.returnKey)
+        } else if !latchedModifiers.isEmpty {
+            // With a modifier latched, type as key presses so ⌘C is a real shortcut.
+            for character in text {
+                if let mapped = KeyCodeMap.macVirtualKey(forCharacter: character) {
+                    sendKey(mapped.code, extra: mapped.shift ? [.shift] : [], characters: String(character))
+                }
+            }
         } else {
             onEvent?(.typeText(text))
         }
     }
 
     func deleteBackward() {
-        tapKey(KeyCodeMap.delete)
-    }
-
-    private func tapKey(_ code: UInt16) {
-        onEvent?(.keyDown(keyCode: code, modifiers: [], characters: nil))
-        onEvent?(.keyUp(keyCode: code, modifiers: []))
+        sendKey(KeyCodeMap.delete)
     }
 }
 
 struct InputCaptureView: UIViewRepresentable {
     let videoRect: () -> CGRect
     let softwareKeyboard: Bool
+    let latchedModifiers: KeyModifiers
+    let invertScroll: Bool
     let onEvent: (InputEvent) -> Void
     let onToggleControls: () -> Void
+    let onModifiersConsumed: () -> Void
+    /// Lets the SwiftUI strip send keys through the same path (Esc, arrows…).
+    let register: (InputCaptureUIView) -> Void
 
     func makeUIView(context: Context) -> InputCaptureUIView {
         let view = InputCaptureUIView()
-        view.onEvent = onEvent
-        view.onToggleControls = onToggleControls
-        view.videoRectProvider = videoRect
+        apply(to: view)
+        register(view)
         DispatchQueue.main.async { view.becomeFirstResponder() }
         return view
     }
 
     func updateUIView(_ view: InputCaptureUIView, context: Context) {
+        apply(to: view)
+        if !view.isFirstResponder { view.becomeFirstResponder() }
+    }
+
+    private func apply(to view: InputCaptureUIView) {
         view.onEvent = onEvent
         view.onToggleControls = onToggleControls
+        view.onModifiersConsumed = onModifiersConsumed
         view.videoRectProvider = videoRect
         view.softwareKeyboardEnabled = softwareKeyboard
-        if !view.isFirstResponder { view.becomeFirstResponder() }
+        view.latchedModifiers = latchedModifiers
+        view.invertScroll = invertScroll
     }
 }

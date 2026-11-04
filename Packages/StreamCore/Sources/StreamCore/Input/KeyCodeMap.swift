@@ -75,6 +75,35 @@ public enum KeyCodeMap {
         table[usage]
     }
 
+    public static let leftArrow: UInt16 = 123
+    public static let rightArrow: UInt16 = 124
+    public static let downArrow: UInt16 = 125
+    public static let upArrow: UInt16 = 126
+    public static let leftBracket: UInt16 = 33
+    public static let rightBracket: UInt16 = 30
+
+    /// US-layout mapping from a typed character to a key code, for sending
+    /// on-screen-keyboard text as key presses when a modifier is latched
+    /// (so ⌘ + "c" from the software keyboard becomes a real ⌘C).
+    public static func macVirtualKey(forCharacter character: Character) -> (code: UInt16, shift: Bool)? {
+        let lower = Character(character.lowercased())
+        if let ascii = lower.asciiValue {
+            if ascii >= 97 && ascii <= 122 {                       // a-z
+                let letters: [UInt16] = [0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6]
+                return (letters[Int(ascii - 97)], character.isUppercase)
+            }
+            if ascii >= 48 && ascii <= 57 {                        // 0-9
+                let digits: [UInt16] = [29, 18, 19, 20, 21, 23, 22, 26, 28, 25]
+                return (digits[Int(ascii - 48)], false)
+            }
+        }
+        let plain: [Character: UInt16] = [" ": space, "\n": returnKey, "\t": tab, "-": minus, "=": equal, "[": 33, "]": 30, "\\": 42, ";": 41, "'": 39, "`": 50, ",": 43, ".": 47, "/": 44]
+        if let code = plain[character] { return (code, false) }
+        let shifted: [Character: UInt16] = ["!": 18, "@": 19, "#": 20, "$": 21, "%": 23, "^": 22, "&": 26, "*": 28, "(": 25, ")": 29, "_": minus, "+": equal, "{": 33, "}": 30, "|": 42, ":": 41, "\"": 39, "~": 50, "<": 43, ">": 47, "?": 44]
+        if let code = shifted[character] { return (code, true) }
+        return nil
+    }
+
     /// Modifier key codes, so the Mac side can treat them as flag changes.
     public static func isModifier(_ keyCode: UInt16) -> Bool {
         [command, shift, capsLock, option, control, rightCommand, rightShift, rightOption, rightControl].contains(keyCode)

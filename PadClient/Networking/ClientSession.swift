@@ -59,6 +59,43 @@ final class ClientSession: ObservableObject, Identifiable {
         didSet { audioPlayer.isMuted = audioMuted }
     }
 
+    // On-screen modifier strip. One-shot modifiers clear after the next key
+    // or click; locked ones stay until tapped again.
+    @Published private(set) var latchedModifiers: KeyModifiers = []
+    @Published private(set) var lockedModifiers: KeyModifiers = []
+    @Published var showKeyStrip = false
+    @Published var invertScroll = UserDefaults.standard.bool(forKey: "invertScroll") {
+        didSet { UserDefaults.standard.set(invertScroll, forKey: "invertScroll") }
+    }
+    /// The UIKit input view, so strip buttons send keys through the same path.
+    weak var inputView: InputCaptureUIView?
+
+    func toggleModifier(_ modifier: KeyModifiers) {
+        if lockedModifiers.contains(modifier) {
+            lockedModifiers.remove(modifier)
+            latchedModifiers.remove(modifier)
+        } else if latchedModifiers.contains(modifier) {
+            latchedModifiers.remove(modifier)
+        } else {
+            latchedModifiers.insert(modifier)
+        }
+        send(.input(.modifiersChanged(latchedModifiers)))
+    }
+
+    func lockModifier(_ modifier: KeyModifiers) {
+        lockedModifiers.insert(modifier)
+        latchedModifiers.insert(modifier)
+        send(.input(.modifiersChanged(latchedModifiers)))
+    }
+
+    /// Called after a key or click went out: drop the one-shot modifiers.
+    func modifiersConsumed() {
+        let remaining = latchedModifiers.intersection(lockedModifiers)
+        guard remaining != latchedModifiers else { return }
+        latchedModifiers = remaining
+        send(.input(.modifiersChanged(latchedModifiers)))
+    }
+
     private let identity: DeviceInfo
     private let key: SymmetricKey
     private var channel: ControlChannel?

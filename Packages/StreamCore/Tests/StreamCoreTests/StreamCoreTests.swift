@@ -165,6 +165,15 @@ final class KeyCodeMapTests: XCTestCase {
         XCTAssertTrue(KeyCodeMap.isModifier(55))
         XCTAssertFalse(KeyCodeMap.isModifier(0))
     }
+
+    func testCharacterMapping() {
+        XCTAssertEqual(KeyCodeMap.macVirtualKey(forCharacter: "c")?.code, 8)
+        XCTAssertEqual(KeyCodeMap.macVirtualKey(forCharacter: "C")?.shift, true)
+        XCTAssertEqual(KeyCodeMap.macVirtualKey(forCharacter: "?")?.code, 44)
+        XCTAssertEqual(KeyCodeMap.macVirtualKey(forCharacter: "?")?.shift, true)
+        XCTAssertEqual(KeyCodeMap.macVirtualKey(forCharacter: "5")?.code, 23)
+        XCTAssertNil(KeyCodeMap.macVirtualKey(forCharacter: "é"))
+    }
 }
 
 final class ClockSyncTests: XCTestCase {

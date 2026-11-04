@@ -73,18 +73,21 @@ final class VideoSender: @unchecked Sendable {
             }
             frameID &+= 1
             let packets = FrameChunker.packets(for: frame, frameID: frameID)
+            // Seal first (outside the batch closure so nothing mutable is captured).
             var sealedPackets: [Data] = []
             sealedPackets.reserveCapacity(packets.count)
-            var bytes = 0
-            client.batch {
-                for packet in packets {
-                    sequence &+= 1
-                    guard let sealed = try? crypto.seal(packet, sequence: sequence, direction: .hostToClient) else { continue }
+            for packet in packets {
+                sequence &+= 1
+                if let sealed = try? crypto.seal(packet, sequence: sequence, direction: .hostToClient) {
                     sealedPackets.append(sealed)
-                    if simulatedLossPercent > 0, Double.random(in: 0..<100) < simulatedLossPercent { continue }
-                    bytes += sealed.count
-                    transmit(sealed, to: client)
                 }
+            }
+            let toSend = simulatedLossPercent > 0
+                ? sealedPackets.filter { _ in Double.random(in: 0..<100) >= simulatedLossPercent }
+                : sealedPackets
+            let bytes = toSend.reduce(0) { $0 + $1.count }
+            client.batch {
+                for sealed in toSend { transmit(sealed, to: client) }
             }
             history.append((frameID, sealedPackets))
             if history.count > historyLength { history.removeFirst() }
@@ -103,22 +106,25 @@ final class VideoSender: @unchecked Sendable {
         queue.async { [self] in
             guard let client else { return }
             let payloadSize = FrameChunker.maxPayload
+            var sealedPackets: [Data] = []
             var offset = 0
-            client.batch {
-                while offset < pcm.count {
-                    let end = min(offset + payloadSize, pcm.count)
-                    frameID &+= 1
-                    sequence &+= 1
-                    let header = VideoPacketHeader(frameID: frameID, captureNanos: StageClock.nowNanos(), chunkIndex: 0, chunkCount: 1, flags: [], codec: .pcmAudio)
-                    var packet = header.serialized()
-                    packet.append(pcm[offset..<end])
-                    if let sealed = try? crypto.seal(packet, sequence: sequence, direction: .hostToClient) {
-                        transmit(sealed, to: client)
-                        counters.withLock { $0.bytes += sealed.count; $0.windowBytes += sealed.count; $0.packets += 1 }
-                    }
-                    offset = end
+            while offset < pcm.count {
+                let end = min(offset + payloadSize, pcm.count)
+                frameID &+= 1
+                sequence &+= 1
+                let header = VideoPacketHeader(frameID: frameID, captureNanos: StageClock.nowNanos(), chunkIndex: 0, chunkCount: 1, flags: [], codec: .pcmAudio)
+                var packet = header.serialized()
+                packet.append(pcm[offset..<end])
+                if let sealed = try? crypto.seal(packet, sequence: sequence, direction: .hostToClient) {
+                    sealedPackets.append(sealed)
                 }
+                offset = end
             }
+            let bytes = sealedPackets.reduce(0) { $0 + $1.count }
+            client.batch {
+                for sealed in sealedPackets { transmit(sealed, to: client) }
+            }
+            counters.withLock { $0.bytes += bytes; $0.windowBytes += bytes; $0.packets += sealedPackets.count }
         }
     }
 

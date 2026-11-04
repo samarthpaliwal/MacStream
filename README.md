@@ -237,10 +237,22 @@ is required; without it the host logs "Input ignored" and drops events.
 | Trackpad / mouse | Pointer moves on hover, primary click, secondary click, two finger scroll |
 | Hardware keyboard | Key down/up with modifiers; HID usages mapped to Mac key codes (`KeyCodeMap`) |
 | On-screen keyboard (toolbar toggle) | Typed as Unicode text; Return and Delete as keys |
+| Three finger swipe left / right | Previous / next Space (⌃← / ⌃→) |
+| Three finger swipe up / down | Mission Control / App Exposé (⌃↑ / ⌃↓) |
+| Two finger swipe from the left / right edge | Back / Forward (⌘[ / ⌘]) |
 | Three finger tap, or the bottom handle | Show or hide the floating toolbar |
 
+**Without a hardware keyboard.** The ⌘ button in the toolbar opens a strip
+with ⌘ ⌥ ⌃ ⇧, Esc, Tab and the arrow keys. Tap a modifier to latch it for the
+next key or click (⌘ then tap a file is a ⌘-click; ⌘ then "c" on the
+on-screen keyboard is ⌘C), or hold it to lock it until tapped again. While a
+modifier is latched, on-screen typing is sent as key presses instead of
+text so shortcuts fire. The options menu (sliders icon) has quality, the
+debug overlay, and *Invert scroll direction* for when the Mac's natural
+scrolling preference makes two-finger scrolling feel backwards.
+
 Known gaps: key auto-repeat is not forwarded yet, and pinch is a stepped
-approximation. Both are on the list for Milestone 8.
+approximation.
 
 Testing without touching the real desktop: run the host with
 `MACSTREAM_INPUT_DRYRUN=1` and it logs each event (type, display point,
@@ -380,6 +392,11 @@ Known gaps left for later: key auto-repeat, pinch as a true gesture,
 per-device pairing keys, audio clock drift over very long sessions.
 
 ## Changelog
+
+### 0.8.1 — Full control without a hardware keyboard
+- PadClient: modifier strip with latch and lock, three finger swipes for
+  Spaces and Mission Control, edge swipes for Back/Forward, invert scroll
+  option, character-to-key mapping for shortcuts from the on-screen keyboard.
 
 ### 0.8.0 — Milestone 8: polish and extras
 - MacHost: `HostSettings` + Settings window, popover redesign, launch at

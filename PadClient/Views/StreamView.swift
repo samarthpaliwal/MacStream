@@ -21,8 +21,12 @@ struct StreamView: View {
             InputCaptureView(
                 videoRect: { session.renderer.videoRect },
                 softwareKeyboard: session.softwareKeyboardVisible,
+                latchedModifiers: session.latchedModifiers,
+                invertScroll: session.invertScroll,
                 onEvent: { event in session.sendInput(event) },
-                onToggleControls: { toggleControls() }
+                onToggleControls: { toggleControls() },
+                onModifiersConsumed: { session.modifiersConsumed() },
+                register: { view in session.inputView = view }
             )
             .ignoresSafeArea()
 
@@ -42,13 +46,18 @@ struct StreamView: View {
                     .padding()
             }
 
-            FloatingToolbar(session: session, onDisconnect: client.disconnect)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 24)
-                .opacity(controlsVisible ? 1 : 0)
-                .offset(y: controlsVisible ? 0 : 20)
-                .allowsHitTesting(controlsVisible)
-                .animation(.spring(duration: 0.3), value: controlsVisible)
+            VStack(spacing: 10) {
+                if session.showKeyStrip {
+                    ModifierStrip(session: session)
+                }
+                FloatingToolbar(session: session, onDisconnect: client.disconnect)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .padding(.bottom, 24)
+            .opacity(controlsVisible || session.showKeyStrip ? 1 : 0)
+            .offset(y: controlsVisible || session.showKeyStrip ? 0 : 20)
+            .allowsHitTesting(controlsVisible || session.showKeyStrip)
+            .animation(.spring(duration: 0.3), value: controlsVisible)
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
@@ -186,16 +195,26 @@ struct FloatingToolbar: View {
             }
             .accessibilityLabel(session.softwareKeyboardVisible ? "Hide keyboard" : "Show keyboard")
 
+            Button {
+                session.showKeyStrip.toggle()
+            } label: {
+                Image(systemName: "command")
+            }
+            .foregroundStyle(session.showKeyStrip ? Color.accentColor : Color.primary)
+            .accessibilityLabel(session.showKeyStrip ? "Hide modifier keys" : "Show modifier keys")
+
             Menu {
                 Picker("Quality", selection: $client.quality) {
                     ForEach(StreamQuality.allCases) { preset in
                         Label(preset.title, systemImage: preset.systemImage).tag(preset)
                     }
                 }
+                Toggle("Invert scroll direction", isOn: $session.invertScroll)
+                Toggle("Debug overlay", isOn: $client.showDebugOverlay)
             } label: {
-                Image(systemName: client.quality.systemImage)
+                Image(systemName: "slider.horizontal.3")
             }
-            .accessibilityLabel("Quality: \(client.quality.title)")
+            .accessibilityLabel("Options")
 
             Button {
                 session.audioMuted.toggle()
@@ -203,13 +222,6 @@ struct FloatingToolbar: View {
                 Image(systemName: session.audioMuted ? "speaker.slash" : "speaker.wave.2")
             }
             .accessibilityLabel(session.audioMuted ? "Unmute Mac audio" : "Mute Mac audio")
-
-            Button {
-                client.showDebugOverlay.toggle()
-            } label: {
-                Image(systemName: "waveform.path.ecg")
-            }
-            .accessibilityLabel("Toggle debug overlay")
 
             Divider().frame(height: 20)
 
@@ -221,6 +233,63 @@ struct FloatingToolbar: View {
         .font(.title3)
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
+        .background(.regularMaterial, in: Capsule())
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+    }
+}
+
+/// On-screen modifiers and navigation keys. Tap a modifier to latch it for
+/// the next key or click; hold it to lock it until tapped again.
+struct ModifierStrip: View {
+    @ObservedObject var session: ClientSession
+
+    private let modifiers: [(KeyModifiers, String, String)] = [
+        (.command, "command", "Command"),
+        (.option, "option", "Option"),
+        (.control, "control", "Control"),
+        (.shift, "shift", "Shift"),
+    ]
+    private let keys: [(UInt16, String, String)] = [
+        (KeyCodeMap.escape, "escape", "Escape"),
+        (KeyCodeMap.tab, "arrow.right.to.line", "Tab"),
+        (KeyCodeMap.leftArrow, "arrow.left", "Left arrow"),
+        (KeyCodeMap.upArrow, "arrow.up", "Up arrow"),
+        (KeyCodeMap.downArrow, "arrow.down", "Down arrow"),
+        (KeyCodeMap.rightArrow, "arrow.right", "Right arrow"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(modifiers, id: \.1) { modifier, symbol, label in
+                let latched = session.latchedModifiers.contains(modifier)
+                let locked = session.lockedModifiers.contains(modifier)
+                Button {
+                    session.toggleModifier(modifier)
+                } label: {
+                    Image(systemName: symbol)
+                        .frame(width: 40, height: 34)
+                        .background(latched ? Color.accentColor.opacity(locked ? 1 : 0.6) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+                        .foregroundStyle(latched ? Color.white : Color.primary)
+                        .overlay(alignment: .topTrailing) {
+                            if locked { Image(systemName: "lock.fill").font(.system(size: 8)).padding(3).foregroundStyle(.white) }
+                        }
+                }
+                .simultaneousGesture(LongPressGesture(minimumDuration: 0.4).onEnded { _ in session.lockModifier(modifier) })
+                .accessibilityLabel("\(label)\(locked ? ", locked" : latched ? ", latched" : "")")
+            }
+            Divider().frame(height: 20)
+            ForEach(keys, id: \.0) { code, symbol, label in
+                Button {
+                    session.inputView?.sendKey(code)
+                } label: {
+                    Image(systemName: symbol).frame(width: 40, height: 34)
+                }
+                .accessibilityLabel(label)
+            }
+        }
+        .font(.body)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
     }
