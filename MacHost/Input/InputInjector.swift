@@ -51,7 +51,7 @@ final class InputInjector {
         case .pointerUp: count("up", displayID: displayID)
         case .scroll: count("scroll", displayID: displayID)
         case .magnify: count("magnify", displayID: displayID)
-        case .keyDown: count("keyDown", displayID: displayID)
+        case .keyDown(let code, let modifiers, _): count("key\(code)\(modifiers.contains(.control) ? "^" : "")\(modifiers.contains(.command) ? "⌘" : "")", displayID: displayID)
         case .keyUp: count("keyUp", displayID: displayID)
         case .modifiersChanged: count("modifiers", displayID: displayID)
         case .typeText: count("text", displayID: displayID)

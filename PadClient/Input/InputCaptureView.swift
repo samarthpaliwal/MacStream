@@ -27,6 +27,8 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     var remapOptionShortcuts = true
 
     private var lastPointerPoint = CGPoint(x: -1, y: -1)
+    /// Fingers currently on the glass, so a third finger suppresses scrolling.
+    private var activeTouches = 0
     /// Modifier keys currently held on a hardware keyboard.
     private var hardwareModifiers: KeyModifiers = []
     private var navSwipeFired = false
@@ -121,6 +123,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleThreeFingerSwipe(_:)))
             swipe.direction = direction
             swipe.numberOfTouchesRequired = 3
+            swipe.delegate = self
             addGestureRecognizer(swipe)
         }
     }
@@ -178,6 +181,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
         let active = event?.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? touches.count
+        activeTouches = active
         if primaryTouch == nil, !multiTouch, active == 1, let touch = touches.first {
             primaryTouch = touch
             startPoint = touch.location(in: self)
@@ -243,6 +247,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
 
     private func resetMultiTouchIfIdle(_ event: UIEvent?) {
         let active = event?.allTouches?.filter { $0.phase != .ended && $0.phase != .cancelled }.count ?? 0
+        activeTouches = active
         if active == 0 { multiTouch = false }
     }
 
@@ -278,6 +283,8 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
         // The trackpad recognizer also sees press-drags (touches > 0); those
         // are handled by the touch path as click-and-drag, not as scrolling.
         if gesture.allowedScrollTypesMask == .all, gesture.numberOfTouches > 0 { return }
+        // Three fingers down is a swipe gesture, never a scroll.
+        if activeTouches >= 3 { return }
         switch gesture.state {
         case .began:
             scrollStart = gesture.location(in: self)
@@ -343,7 +350,10 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // Hover never blocks anything, and three-finger swipes must be able to
+        // recognise even if two fingers already started the scroll recognizer.
         gestureRecognizer is UIHoverGestureRecognizer || other is UIHoverGestureRecognizer
+            || gestureRecognizer is UISwipeGestureRecognizer || other is UISwipeGestureRecognizer
     }
 
     // MARK: Hardware keyboard
