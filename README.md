@@ -251,6 +251,18 @@ text so shortcuts fire. The options menu (sliders icon) has quality, the
 debug overlay, and *Invert scroll direction* for when the Mac's natural
 scrolling preference makes two-finger scrolling feel backwards.
 
+**What iPadOS keeps for itself.** Three-finger (and four-finger) trackpad
+swipes, ⌘Tab, ⌘Space, ⌘H, ⌘⇧3/4 and every Globe combination are handled by
+iPadOS before any app sees them, so they cannot be forwarded. Stand-ins:
+
+| Mac action | On the iPad |
+|---|---|
+| Switch Space | ⌃← / ⌃→ on the keyboard, or hold ⌃ and two-finger swipe left/right on the trackpad, or three-finger swipe on the screen |
+| Mission Control / App Exposé | ⌃↑ / ⌃↓, or hold ⌃ and two-finger swipe up/down, or three-finger swipe on the screen |
+| ⌘Tab | ⌥Tab |
+| ⌘Space (Spotlight) | ⌥Space |
+| Back / Forward | Two-finger swipe from the screen edge, or ⌘[ / ⌘] |
+
 **Magic Keyboard.** The trackpad pointer maps absolutely onto the Mac
 display and the iPad's own pointer is hidden over the stream, so only the
 Mac's cursor shows. Click, click-and-drag (1 pt threshold), two-finger

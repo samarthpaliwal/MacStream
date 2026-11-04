@@ -22,11 +22,42 @@ final class InputInjector {
     private var magnifyAccumulator: Double = 1
 
     var eventsInjected = 0
+    /// `MACSTREAM_LOG_INPUT=1`: once a second, log what arrived and where the cursor is.
+    private let logInput = ProcessInfo.processInfo.environment["MACSTREAM_LOG_INPUT"] == "1"
+    private var counts: [String: Int] = [:]
+    private var lastReport: TimeInterval = 0
+    private var ignoredCount = 0
 
     private init() {}
 
+    private func count(_ kind: String, displayID: CGDirectDisplayID) {
+        guard logInput else { return }
+        counts[kind, default: 0] += 1
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastReport >= 1 else { return }
+        lastReport = now
+        let cursor = CGEvent(source: nil)?.location ?? .zero
+        let bounds = CGDisplayBounds(displayID)
+        let inside = bounds.contains(cursor)
+        let summary = counts.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        AppState.shared.log("INPUT \(summary) · cursor (\(Int(cursor.x)), \(Int(cursor.y))) \(inside ? "inside" : "OUTSIDE") display \(displayID) \(Int(bounds.width))×\(Int(bounds.height)) · AX=\(AXIsProcessTrusted()) · dropped=\(ignoredCount)")
+        counts = [:]
+    }
+
     func inject(_ event: InputEvent, displayID: CGDirectDisplayID) {
+        switch event {
+        case .pointerMove: count("move", displayID: displayID)
+        case .pointerDown: count("down", displayID: displayID)
+        case .pointerUp: count("up", displayID: displayID)
+        case .scroll: count("scroll", displayID: displayID)
+        case .magnify: count("magnify", displayID: displayID)
+        case .keyDown: count("keyDown", displayID: displayID)
+        case .keyUp: count("keyUp", displayID: displayID)
+        case .modifiersChanged: count("modifiers", displayID: displayID)
+        case .typeText: count("text", displayID: displayID)
+        }
         guard dryRun || AXIsProcessTrusted() else {
+            ignoredCount += 1
             if !warnedAboutPermission {
                 warnedAboutPermission = true
                 AppState.shared.log("Input ignored: Accessibility permission not granted")
