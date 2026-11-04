@@ -95,6 +95,18 @@ final class InputInjector {
         }
     }
 
+    /// Puts the cursor in the middle of the captured display so it is visible
+    /// on the iPad from the first frame, instead of wherever it was left on
+    /// another monitor.
+    func moveCursorToCenter(of displayID: CGDirectDisplayID) {
+        guard dryRun || AXIsProcessTrusted() else { return }
+        let bounds = CGDisplayBounds(displayID)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        CGWarpMouseCursorPosition(center)
+        buttonsDown.removeAll()
+        move(to: center)
+    }
+
     // MARK: Pointer
 
     private func point(_ p: NormalizedPoint, in bounds: CGRect) -> CGPoint {

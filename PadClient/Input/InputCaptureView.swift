@@ -24,6 +24,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     /// ⌥Space from a hardware keyboard are sent to the Mac as ⌘Tab and ⌘Space.
     var remapOptionShortcuts = true
 
+    private var lastPointerPoint = CGPoint(x: -1, y: -1)
     private var repeatTimers: [UInt16: Timer] = [:]
     private var heldKeys: [UInt16: (modifiers: KeyModifiers, characters: String?)] = [:]
     /// Letterboxed video rect in this view's coordinates.
@@ -91,11 +92,13 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
         scroll.delegate = self
         addGestureRecognizer(scroll)
 
-        // Trackpad two-finger scrolling arrives as scroll events with no
-        // touches, so it needs its own recognizer that accepts only those.
+        // Trackpad two-finger scrolling arrives as scroll events (no touches),
+        // which only a recognizer with allowedScrollTypesMask receives. It
+        // must not swallow one-finger press-drags, which stay with touches.
         let trackpadScroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
-        trackpadScroll.allowedTouchTypes = []
+        trackpadScroll.allowedTouchTypes = [UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         trackpadScroll.allowedScrollTypesMask = .all
+        trackpadScroll.cancelsTouchesInView = false
         trackpadScroll.delegate = self
         addGestureRecognizer(trackpadScroll)
 
@@ -140,6 +143,19 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
 
     func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
         .hidden()
+    }
+
+    /// Called for every pointer move over the view, hidden pointer or not,
+    /// so trackpad movement reaches the Mac even where hover is not delivered.
+    func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest, defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        pointerMoved(to: request.location)
+        return defaultRegion
+    }
+
+    private func pointerMoved(to location: CGPoint) {
+        guard abs(location.x - lastPointerPoint.x) > 0.25 || abs(location.y - lastPointerPoint.y) > 0.25 else { return }
+        lastPointerPoint = location
+        onEvent?(.pointerMove(normalized(location)))
     }
 
     // MARK: Coordinate mapping
@@ -253,6 +269,9 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     }
 
     @objc private func handleScroll(_ gesture: UIPanGestureRecognizer) {
+        // The trackpad recognizer also sees press-drags (touches > 0); those
+        // are handled by the touch path as click-and-drag, not as scrolling.
+        if gesture.allowedScrollTypesMask == .all, gesture.numberOfTouches > 0 { return }
         switch gesture.state {
         case .began:
             scrollStart = gesture.location(in: self)
@@ -296,7 +315,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
 
     @objc private func handleHover(_ gesture: UIHoverGestureRecognizer) {
         guard gesture.state == .began || gesture.state == .changed else { return }
-        onEvent?(.pointerMove(normalized(gesture.location(in: self))))
+        pointerMoved(to: gesture.location(in: self))
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {

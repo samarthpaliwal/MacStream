@@ -365,6 +365,7 @@ final class HostController {
         let sender = session.videoSender
         capture.onEncodedFrame = { frame in sender.send(frame) }
         capture.onAudioChunk = { pcm in sender.sendAudio(pcm) }
+        InputInjector.shared.moveCursorToCenter(of: state.displayID)
         if HostSettings.shared.shareClipboard {
             clipboard.onLocalChange = { [weak self, weak session] text in
                 session?.channel.send(.clipboard(text: text))
