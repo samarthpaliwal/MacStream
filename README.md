@@ -251,8 +251,16 @@ text so shortcuts fire. The options menu (sliders icon) has quality, the
 debug overlay, and *Invert scroll direction* for when the Mac's natural
 scrolling preference makes two-finger scrolling feel backwards.
 
-Known gaps: key auto-repeat is not forwarded yet, and pinch is a stepped
-approximation.
+**Magic Keyboard.** The trackpad pointer maps absolutely onto the Mac
+display and the iPad's own pointer is hidden over the stream, so only the
+Mac's cursor shows. Click, click-and-drag (1 pt threshold), two-finger
+secondary click, two-finger scroll and pinch all work from the trackpad.
+Hardware keys auto-repeat like on a Mac (400 ms, then 50 ms). iPadOS keeps
+⌘Tab, ⌘Space and ⌘H for itself and never delivers them to apps, so by
+default ⌥Tab and ⌥Space are sent to the Mac as ⌘Tab and ⌘Space (switch it
+off in the options menu). The hardware keyboard shortcut bar is suppressed.
+
+Known gap: pinch is a stepped approximation.
 
 Testing without touching the real desktop: run the host with
 `MACSTREAM_INPUT_DRYRUN=1` and it logs each event (type, display point,
@@ -392,6 +400,11 @@ Known gaps left for later: key auto-repeat, pinch as a true gesture,
 per-device pairing keys, audio clock drift over very long sessions.
 
 ## Changelog
+
+### 0.8.2 — Magic Keyboard
+- PadClient: hidden iPad pointer over the stream, dedicated trackpad scroll
+  recognizer, pointer drag threshold, hardware key auto-repeat, ⌥Tab/⌥Space
+  remap for iPadOS-reserved shortcuts, shortcut bar suppressed.
 
 ### 0.8.1 — Full control without a hardware keyboard
 - PadClient: modifier strip with latch and lock, three finger swipes for

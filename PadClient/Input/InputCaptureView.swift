@@ -10,7 +10,7 @@ import UIKit
 /// (sent as magnify; the Mac maps it to Command-plus/minus), Pencil = precise
 /// pointer with hover, hardware keyboard = key events, on-screen keyboard =
 /// typed text. A three finger tap toggles the floating controls.
-final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate {
+final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate, UIPointerInteractionDelegate {
     var onEvent: ((InputEvent) -> Void)?
     var onToggleControls: (() -> Void)?
     /// Modifiers latched from the on-screen strip; merged into every key and
@@ -20,6 +20,12 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
     /// Flip two-finger scroll direction (macOS "natural scrolling" preference
     /// also applies to injected events, so this lets either feel right).
     var invertScroll = false
+    /// iPadOS keeps ⌘Tab, ⌘Space and ⌘H for itself. With this on, ⌥Tab and
+    /// ⌥Space from a hardware keyboard are sent to the Mac as ⌘Tab and ⌘Space.
+    var remapOptionShortcuts = true
+
+    private var repeatTimers: [UInt16: Timer] = [:]
+    private var heldKeys: [UInt16: (modifiers: KeyModifiers, characters: String?)] = [:]
     /// Letterboxed video rect in this view's coordinates.
     var videoRectProvider: (() -> CGRect)?
 
@@ -58,6 +64,12 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         backgroundColor = .clear
         isMultipleTouchEnabled = true
 
+        // Trackpad: hide the iPad's own pointer over the stream so only the
+        // Mac's cursor shows, and drop the hardware-keyboard shortcut bar.
+        addInteraction(UIPointerInteraction(delegate: self))
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
+
         let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(handleTwoFingerTap(_:)))
         twoFingerTap.numberOfTouchesRequired = 2
         twoFingerTap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
@@ -75,9 +87,17 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
         scroll.minimumNumberOfTouches = 2
         scroll.maximumNumberOfTouches = 2
-        scroll.allowedScrollTypesMask = .all
+        scroll.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
         scroll.delegate = self
         addGestureRecognizer(scroll)
+
+        // Trackpad two-finger scrolling arrives as scroll events with no
+        // touches, so it needs its own recognizer that accepts only those.
+        let trackpadScroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll(_:)))
+        trackpadScroll.allowedTouchTypes = []
+        trackpadScroll.allowedScrollTypesMask = .all
+        trackpadScroll.delegate = self
+        addGestureRecognizer(trackpadScroll)
 
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
         pinch.delegate = self
@@ -118,6 +138,10 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
 
     override var canBecomeFirstResponder: Bool { true }
 
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        .hidden()
+    }
+
     // MARK: Coordinate mapping
 
     private func normalized(_ point: CGPoint) -> NormalizedPoint {
@@ -154,7 +178,13 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         guard let touch = primaryTouch, touches.contains(touch), !multiTouch else { return }
         let location = touch.location(in: self)
         if !dragging {
-            let threshold: CGFloat = touch.type == .pencil ? 2 : 8
+            // Fingers wobble, pointers and Pencils do not.
+            let threshold: CGFloat
+            switch touch.type {
+            case .pencil: threshold = 2
+            case .indirectPointer: threshold = 1
+            default: threshold = 8
+            }
             guard hypot(location.x - startPoint.x, location.y - startPoint.y) > threshold else { return }
             dragging = true
             onEvent?(.pointerMove(normalized(startPoint)))
@@ -278,14 +308,48 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         var unhandled = Set<UIPress>()
         for press in presses {
-            if let key = press.key, let code = KeyCodeMap.macVirtualKey(forHIDUsage: key.keyCode.rawValue) {
+            if let key = press.key, let mapped = KeyCodeMap.macVirtualKey(forHIDUsage: key.keyCode.rawValue) {
+                let code = mapped
+                var modifiers = Self.modifiers(key.modifierFlags).union(latchedModifiers)
+                if remapOptionShortcuts, modifiers == [.option], code == KeyCodeMap.tab || code == KeyCodeMap.space {
+                    modifiers = [.command]
+                }
                 let characters = key.characters.isEmpty ? nil : key.characters
-                onEvent?(.keyDown(keyCode: code, modifiers: Self.modifiers(key.modifierFlags).union(latchedModifiers), characters: characters))
+                onEvent?(.keyDown(keyCode: code, modifiers: modifiers, characters: characters))
+                if !KeyCodeMap.isModifier(code) { startRepeat(code: code, modifiers: modifiers, characters: characters) }
             } else {
                 unhandled.insert(press)
             }
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
+    }
+
+    // MARK: Key repeat
+
+    /// iPadOS does not deliver auto-repeat for hardware keys to pressesBegan,
+    /// so holding a key would send one event. Repeat it like the Mac would:
+    /// first after 400 ms, then every 50 ms until the key is released.
+    private func startRepeat(code: UInt16, modifiers: KeyModifiers, characters: String?) {
+        repeatTimers[code]?.invalidate()
+        heldKeys[code] = (modifiers, characters)
+        let timer = Timer(timeInterval: 0.4, repeats: false) { [weak self] _ in
+            guard let self, let held = self.heldKeys[code] else { return }
+            let repeating = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self, let held = self.heldKeys[code] else { return }
+                self.onEvent?(.keyDown(keyCode: code, modifiers: held.modifiers, characters: held.characters))
+            }
+            RunLoop.main.add(repeating, forMode: .common)
+            self.repeatTimers[code] = repeating
+            self.onEvent?(.keyDown(keyCode: code, modifiers: held.modifiers, characters: held.characters))
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        repeatTimers[code] = timer
+    }
+
+    private func stopRepeat(code: UInt16) {
+        repeatTimers[code]?.invalidate()
+        repeatTimers[code] = nil
+        heldKeys[code] = nil
     }
 
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -300,7 +364,12 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate 
         var unhandled = Set<UIPress>()
         for press in presses {
             if let key = press.key, let code = KeyCodeMap.macVirtualKey(forHIDUsage: key.keyCode.rawValue) {
-                onEvent?(.keyUp(keyCode: code, modifiers: Self.modifiers(key.modifierFlags).union(latchedModifiers)))
+                stopRepeat(code: code)
+                var modifiers = Self.modifiers(key.modifierFlags).union(latchedModifiers)
+                if remapOptionShortcuts, modifiers == [.option], code == KeyCodeMap.tab || code == KeyCodeMap.space {
+                    modifiers = [.command]
+                }
+                onEvent?(.keyUp(keyCode: code, modifiers: modifiers))
                 if !KeyCodeMap.isModifier(code) { onModifiersConsumed?() }
             } else {
                 unhandled.insert(press)
@@ -348,6 +417,7 @@ struct InputCaptureView: UIViewRepresentable {
     let softwareKeyboard: Bool
     let latchedModifiers: KeyModifiers
     let invertScroll: Bool
+    let remapOptionShortcuts: Bool
     let onEvent: (InputEvent) -> Void
     let onToggleControls: () -> Void
     let onModifiersConsumed: () -> Void
@@ -375,5 +445,6 @@ struct InputCaptureView: UIViewRepresentable {
         view.softwareKeyboardEnabled = softwareKeyboard
         view.latchedModifiers = latchedModifiers
         view.invertScroll = invertScroll
+        view.remapOptionShortcuts = remapOptionShortcuts
     }
 }

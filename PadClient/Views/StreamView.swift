@@ -23,6 +23,7 @@ struct StreamView: View {
                 softwareKeyboard: session.softwareKeyboardVisible,
                 latchedModifiers: session.latchedModifiers,
                 invertScroll: session.invertScroll,
+                remapOptionShortcuts: session.remapOptionShortcuts,
                 onEvent: { event in session.sendInput(event) },
                 onToggleControls: { toggleControls() },
                 onModifiersConsumed: { session.modifiersConsumed() },
@@ -210,6 +211,7 @@ struct FloatingToolbar: View {
                     }
                 }
                 Toggle("Invert scroll direction", isOn: $session.invertScroll)
+                Toggle("⌥Tab / ⌥Space act as ⌘Tab / ⌘Space", isOn: $session.remapOptionShortcuts)
                 Toggle("Debug overlay", isOn: $client.showDebugOverlay)
             } label: {
                 Image(systemName: "slider.horizontal.3")

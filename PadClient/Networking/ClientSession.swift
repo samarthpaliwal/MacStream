@@ -67,6 +67,9 @@ final class ClientSession: ObservableObject, Identifiable {
     @Published var invertScroll = UserDefaults.standard.bool(forKey: "invertScroll") {
         didSet { UserDefaults.standard.set(invertScroll, forKey: "invertScroll") }
     }
+    @Published var remapOptionShortcuts = UserDefaults.standard.object(forKey: "remapOptionShortcuts") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(remapOptionShortcuts, forKey: "remapOptionShortcuts") }
+    }
     /// The UIKit input view, so strip buttons send keys through the same path.
     weak var inputView: InputCaptureUIView?
 
