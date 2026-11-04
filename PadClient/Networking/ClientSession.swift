@@ -64,6 +64,12 @@ final class ClientSession: ObservableObject, Identifiable {
     @Published private(set) var latchedModifiers: KeyModifiers = []
     @Published private(set) var lockedModifiers: KeyModifiers = []
     @Published var showKeyStrip = false
+    /// Cursor drawn on the iPad: shape from the Mac, position from our own input.
+    @Published private(set) var cursorImage: UIImage?
+    @Published private(set) var cursorSize = CGSize(width: 16, height: 16)
+    @Published private(set) var cursorHotspot = CGPoint.zero
+    /// In the input view's coordinates.
+    @Published var cursorPoint: CGPoint?
     @Published var invertScroll = UserDefaults.standard.bool(forKey: "invertScroll") {
         didSet { UserDefaults.standard.set(invertScroll, forKey: "invertScroll") }
     }
@@ -233,6 +239,15 @@ final class ClientSession: ObservableObject, Identifiable {
 
         case .clipboard(let text):
             clipboard.apply(remote: text)
+
+        case .cursorImage(let cursor):
+            cursorImage = UIImage(data: cursor.png)
+            cursorSize = CGSize(width: cursor.width, height: cursor.height)
+            cursorHotspot = CGPoint(x: cursor.hotspotX, y: cursor.hotspotY)
+
+        case .cursorPosition(let point):
+            let rect = renderer.videoRect
+            cursorPoint = CGPoint(x: rect.minX + point.x * rect.width, y: rect.minY + point.y * rect.height)
 
         case .disconnect(let reason):
             append("Mac disconnected: \(reason)")

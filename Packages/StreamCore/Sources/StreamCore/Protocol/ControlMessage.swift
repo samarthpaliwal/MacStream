@@ -17,6 +17,23 @@ public struct HelloPayload: Codable, Hashable, Sendable {
     }
 }
 
+/// A cursor bitmap with its hotspot, in the Mac's points.
+public struct CursorImage: Codable, Hashable, Sendable {
+    public var png: Data
+    public var width: Double
+    public var height: Double
+    public var hotspotX: Double
+    public var hotspotY: Double
+
+    public init(png: Data, width: Double, height: Double, hotspotX: Double, hotspotY: Double) {
+        self.png = png
+        self.width = width
+        self.height = height
+        self.hotspotX = hotspotX
+        self.hotspotY = hotspotY
+    }
+}
+
 /// Physical screen of a client, in pixels and points.
 public struct ScreenInfo: Codable, Hashable, Sendable {
     public var pixelWidth: Int
@@ -101,6 +118,11 @@ public enum ControlMessage: Codable, Hashable, Sendable {
     case input(InputEvent)
     /// Text clipboard contents, either direction, when they change.
     case clipboard(text: String)
+    /// The Mac's current cursor shape; the iPad draws the cursor itself so
+    /// pointer movement has no video latency.
+    case cursorImage(CursorImage)
+    /// Host moved the cursor on its own (for example on connect).
+    case cursorPosition(NormalizedPoint)
     /// Free-form text, used by the Milestone 2 connectivity test.
     case text(String)
     case disconnect(reason: String)

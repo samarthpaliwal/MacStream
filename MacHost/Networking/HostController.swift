@@ -47,6 +47,7 @@ final class HostController {
     private var bitrateController: BitrateController?
     private var lastClientStats: ClientStats?
     private let clipboard = ClipboardSync()
+    private let cursorTracker = CursorTracker()
     private var virtualDisplay: VirtualDisplay?
 
     /// Code rotates after this many failed handshakes in pairing mode. One
@@ -293,7 +294,7 @@ final class HostController {
             state.log("iPad disconnected: \(reason)")
             session.channel.cancel()
 
-        case .helloAck, .pong, .pairingComplete, .hostStats:
+        case .helloAck, .pong, .pairingComplete, .hostStats, .cursorImage, .cursorPosition:
             break
         }
     }
@@ -366,6 +367,9 @@ final class HostController {
         capture.onEncodedFrame = { frame in sender.send(frame) }
         capture.onAudioChunk = { pcm in sender.sendAudio(pcm) }
         InputInjector.shared.moveCursorToCenter(of: state.displayID)
+        session.channel.send(.cursorPosition(NormalizedPoint(x: 0.5, y: 0.5)))
+        cursorTracker.onChange = { [weak session] image in session?.channel.send(.cursorImage(image)) }
+        cursorTracker.start()
         if HostSettings.shared.shareClipboard {
             clipboard.onLocalChange = { [weak self, weak session] text in
                 session?.channel.send(.clipboard(text: text))
@@ -391,6 +395,7 @@ final class HostController {
         statsTimer = nil
         state.clientStats = nil
         clipboard.stop()
+        cursorTracker.stop()
         let capture = CaptureController.shared
         capture.onEncodedFrame = nil
         capture.onAudioChunk = nil

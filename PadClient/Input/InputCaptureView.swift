@@ -13,6 +13,8 @@ import UIKit
 final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate, UIPointerInteractionDelegate {
     var onEvent: ((InputEvent) -> Void)?
     var onToggleControls: (() -> Void)?
+    /// Where the pointer last was, in view coordinates, for the drawn cursor.
+    var onPointerLocation: ((CGPoint) -> Void)?
     /// Modifiers latched from the on-screen strip; merged into every key and
     /// click until `onModifiersConsumed` releases the one-shot ones.
     var latchedModifiers: KeyModifiers = []
@@ -164,6 +166,7 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     // MARK: Coordinate mapping
 
     private func normalized(_ point: CGPoint) -> NormalizedPoint {
+        onPointerLocation?(point)
         let rect = videoRectProvider?() ?? bounds
         guard rect.width > 0, rect.height > 0 else { return NormalizedPoint(x: 0, y: 0) }
         let x = min(max((point.x - rect.minX) / rect.width, 0), 1)
@@ -467,7 +470,17 @@ final class InputCaptureUIView: UIView, UIKeyInput, UIGestureRecognizerDelegate,
     }
 }
 
-struct InputCaptureView: UIViewRepresentable {
+/// iPadOS attaches three-finger undo/redo and edit-menu gestures to any text
+/// input that is first responder. Opting out here lets our own three-finger
+/// recognizers see those touches.
+final class InputCaptureViewController: UIViewController {
+    let captureView = InputCaptureUIView()
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
+    override func loadView() { view = captureView }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+}
+
+struct InputCaptureView: UIViewControllerRepresentable {
     let videoRect: () -> CGRect
     let softwareKeyboard: Bool
     let latchedModifiers: KeyModifiers
@@ -476,18 +489,21 @@ struct InputCaptureView: UIViewRepresentable {
     let onEvent: (InputEvent) -> Void
     let onToggleControls: () -> Void
     let onModifiersConsumed: () -> Void
+    let onPointerLocation: (CGPoint) -> Void
     /// Lets the SwiftUI strip send keys through the same path (Esc, arrows…).
     let register: (InputCaptureUIView) -> Void
 
-    func makeUIView(context: Context) -> InputCaptureUIView {
-        let view = InputCaptureUIView()
+    func makeUIViewController(context: Context) -> InputCaptureViewController {
+        let controller = InputCaptureViewController()
+        let view = controller.captureView
         apply(to: view)
         register(view)
         DispatchQueue.main.async { view.becomeFirstResponder() }
-        return view
+        return controller
     }
 
-    func updateUIView(_ view: InputCaptureUIView, context: Context) {
+    func updateUIViewController(_ controller: InputCaptureViewController, context: Context) {
+        let view = controller.captureView
         apply(to: view)
         if !view.isFirstResponder { view.becomeFirstResponder() }
     }
@@ -496,6 +512,7 @@ struct InputCaptureView: UIViewRepresentable {
         view.onEvent = onEvent
         view.onToggleControls = onToggleControls
         view.onModifiersConsumed = onModifiersConsumed
+        view.onPointerLocation = onPointerLocation
         view.videoRectProvider = videoRect
         view.softwareKeyboardEnabled = softwareKeyboard
         view.latchedModifiers = latchedModifiers

@@ -27,9 +27,14 @@ struct StreamView: View {
                 onEvent: { event in session.sendInput(event) },
                 onToggleControls: { toggleControls() },
                 onModifiersConsumed: { session.modifiersConsumed() },
+                onPointerLocation: { point in session.cursorPoint = point },
                 register: { view in session.inputView = view }
             )
             .ignoresSafeArea()
+
+            CursorOverlay(session: session)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
 
             if !session.hasVideo {
                 ConnectionTestCard(session: session)
@@ -237,6 +242,38 @@ struct FloatingToolbar: View {
         .padding(.vertical, 12)
         .background(.regularMaterial, in: Capsule())
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
+    }
+}
+
+/// The Mac's cursor, drawn locally at the last pointer position. Scaled so it
+/// is the same size relative to the Mac screen as it is on the Mac.
+struct CursorOverlay: View {
+    @ObservedObject var session: ClientSession
+
+    var body: some View {
+        GeometryReader { _ in
+            if let point = session.cursorPoint, session.hasVideo {
+                let scale = scaleFactor
+                let size = CGSize(width: session.cursorSize.width * scale, height: session.cursorSize.height * scale)
+                let origin = CGPoint(x: point.x - session.cursorHotspot.x * scale, y: point.y - session.cursorHotspot.y * scale)
+                Group {
+                    if let image = session.cursorImage {
+                        Image(uiImage: image).resizable().interpolation(.high)
+                    } else {
+                        Image(systemName: "cursorarrow").resizable().foregroundStyle(.white).shadow(radius: 1)
+                    }
+                }
+                .frame(width: size.width, height: size.height)
+                .position(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+            }
+        }
+    }
+
+    /// iPad points per Mac point across the letterboxed video.
+    private var scaleFactor: CGFloat {
+        let rect = session.renderer.videoRect
+        guard let display = session.display, display.pointWidth > 0, rect.width > 0 else { return 1 }
+        return rect.width / CGFloat(display.pointWidth)
     }
 }
 

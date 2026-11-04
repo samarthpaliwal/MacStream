@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import Foundation
 import StreamCore
 
@@ -65,7 +66,7 @@ final class CaptureController: ObservableObject {
             width: Self.even(Int(Double(pixelWidth) * scale)),
             height: Self.even(Int(Double(pixelHeight) * scale)),
             framesPerSecond: settings.frameRate,
-            showsCursor: settings.showCursor,
+            showsCursor: settings.showCursor && url != nil,   // the iPad draws the cursor while streaming
             capturesAudio: settings.streamAudio && url == nil && sourceKind == .screen
         )
 
@@ -86,7 +87,10 @@ final class CaptureController: ObservableObject {
                 self?.onEncodedFrame?(frame)
             }
             encoder.onDrop = { [accumulator] in accumulator.recordDrop() }
-            source.onFrame = { [encoder] frame in encoder.encode(frame) }
+            source.onFrame = { [weak self, encoder] frame in
+                if let self, self.dumpNextFrame { Task { @MainActor in self.dumpIfRequested(frame) } }
+                encoder.encode(frame)
+            }
             source.onAudio = { [weak self] pcm in self?.onAudioChunk?(pcm) }
             source.onError = { [weak self] error in
                 Task { @MainActor in
@@ -167,6 +171,25 @@ final class CaptureController: ObservableObject {
 
     private func refreshStats() {
         stats = accumulator.snapshot()
+        // Diagnostics: touching .build/dumpframe saves the next captured frame as PNG.
+        let flag = URL(fileURLWithPath: Self.dumpFlagPath)
+        if FileManager.default.fileExists(atPath: flag.path) {
+            try? FileManager.default.removeItem(at: flag)
+            dumpNextFrame = true
+        }
+    }
+
+    private static let dumpFlagPath = "/Users/samarth.p/Developer/MacStream/.build/dumpframe"
+    private var dumpNextFrame = false
+
+    private func dumpIfRequested(_ frame: CapturedFrame) {
+        guard dumpNextFrame else { return }
+        dumpNextFrame = false
+        let image = CIImage(cvPixelBuffer: frame.pixelBuffer)
+        let context = CIContext()
+        let url = URL(fileURLWithPath: "/Users/samarth.p/Developer/MacStream/.build/frame.png")
+        try? context.writePNGRepresentation(of: image, to: url, format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
+        AppState.shared.log("Frame dumped to \(url.path) (\(CVPixelBufferGetWidth(frame.pixelBuffer))×\(CVPixelBufferGetHeight(frame.pixelBuffer)))")
     }
 
     static func recordingURL() -> URL {
