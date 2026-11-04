@@ -12,6 +12,9 @@ final class InputInjector {
     static let shared = InputInjector()
 
     private let dryRun = ProcessInfo.processInfo.environment["MACSTREAM_INPUT_DRYRUN"] == "1"
+    /// Events tagged with the HID system state look like hardware input to
+    /// the window server and the Dock's hotkey handling.
+    private let source = CGEventSource(stateID: .hidSystemState)
     private var warnedAboutPermission = false
     private var buttonsDown: Set<PointerButton> = []
     private var lastPosition = CGPoint.zero
@@ -89,7 +92,7 @@ final class InputInjector {
         case .scroll(let p, let deltaX, let deltaY, _):
             move(to: point(p, in: bounds))
             // Finger moving down = content moving down (natural scrolling).
-            if let scroll = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: Int32(deltaY.rounded()), wheel2: Int32(deltaX.rounded()), wheel3: 0) {
+            if let scroll = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2, wheel1: Int32(deltaY.rounded()), wheel2: Int32(deltaX.rounded()), wheel3: 0) {
                 scroll.flags = modifierFlags
                 post(scroll, describe: "scroll dx=\(Int(deltaX)) dy=\(Int(deltaY))")
             }
@@ -133,8 +136,8 @@ final class InputInjector {
             modifierFlags = Self.flags(modifiers)
 
         case .typeText(let text):
-            guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) else { return }
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
             let utf16 = Array(text.utf16)
             down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
             up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
@@ -181,7 +184,7 @@ final class InputInjector {
     }
 
     private func post(mouse type: CGEventType, at location: CGPoint, button: PointerButton) {
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: location, mouseButton: Self.cgButton(button)) else { return }
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: location, mouseButton: Self.cgButton(button)) else { return }
         event.flags = modifierFlags
         if type != .mouseMoved {
             event.setIntegerValueField(.mouseEventClickState, value: clickCount)
@@ -217,9 +220,13 @@ final class InputInjector {
     // MARK: Keyboard
 
     private func key(_ keyCode: UInt16, down: Bool) {
-        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(keyCode), keyDown: down) else { return }
-        event.flags = modifierFlags
-        post(event, describe: down ? "key \(keyCode) down flags=\(modifierFlags.rawValue)" : nil)
+        guard let event = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(keyCode), keyDown: down) else { return }
+        var flags = modifierFlags
+        // Hardware arrow/navigation keys always carry these; some system
+        // shortcuts (Spaces, Mission Control) match on them.
+        if Self.isNavigationKey(keyCode) { flags.formUnion([.maskSecondaryFn, .maskNumericPad]) }
+        event.flags = flags
+        post(event, describe: down ? "key \(keyCode) down flags=\(flags.rawValue)" : nil)
     }
 
     /// Modifier key events the client did not send itself (latched or
@@ -243,6 +250,10 @@ final class InputInjector {
             key(code, down: false)
         }
         syntheticModifierKeys.removeAll()
+    }
+
+    private static func isNavigationKey(_ code: UInt16) -> Bool {
+        [KeyCodeMap.leftArrow, KeyCodeMap.rightArrow, KeyCodeMap.upArrow, KeyCodeMap.downArrow, 115, 116, 117, 119, 121].contains(code)
     }
 
     private static func rightVariant(of code: UInt16) -> UInt16 {
