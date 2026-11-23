@@ -1,0 +1,299 @@
+# How MacStream works
+
+The protocol, pipeline and measurements in detail, in the order the pieces were built.
+
+## Connecting
+
+1. Run MacHost. Its menu bar popover shows a six-digit pairing code.
+2. Run PadClient. The Mac appears under "Macs on this network" within a second
+   or two. On a real iPad the first launch shows the local-network prompt;
+   allow it, or discovery silently finds nothing.
+3. Tap the Mac, enter the code, tap Connect. The card shows "Connected", the
+   round-trip time, and the Mac's display geometry.
+4. "Send test message" on the iPad echoes through the Mac; "Send test message
+   to iPad" in the Mac popover goes the other way. The popover's list icon
+   shows the host log.
+
+What is happening underneath:
+
+- The Mac advertises `_macstream._tcp` over Bonjour with its device ID in the
+  TXT record and listens on a random TCP port.
+- The control channel is TLS 1.2 with a pre-shared key derived from the code
+  and the Mac's ID (HKDF-SHA256). A wrong code fails the handshake; the Mac
+  rotates the code after 15 failed handshakes (about 5 wrong attempts).
+- Messages are JSON with a 4-byte length prefix. The client pings once a
+  second to measure round-trip time.
+- Only one client is accepted at a time; a second is refused.
+- Pairing is described under "Pairing and security" below.
+
+For automated testing the host accepts `MACSTREAM_PAIRING_CODE=123456` in its
+environment to use a fixed code instead of a random one.
+
+## Capture and encode
+
+The Mac popover has a Capture section. Pick HEVC or H.264 and Screen or
+Test pattern, then **Record 5 s test clip**. The clip lands in
+`~/Movies/MacStream/` and **Show in Finder** reveals it; open it in QuickTime
+to judge quality. While running, the section shows frames per second,
+megabits per second, and the measured capture and encode latency.
+
+Pipeline:
+
+- `ScreenCapturer` uses ScreenCaptureKit with a queue depth of 3, a 60 fps
+  cap, 4:2:0 video-range output and the cursor included. Frames are only
+  delivered when the screen changes, so a static desktop shows a low frame
+  rate; that is expected and saves bandwidth.
+- `VideoEncoder` is a VideoToolbox hardware session in real-time mode with
+  frame reordering off (no B-frames), low-latency rate control, a data rate
+  cap, and keyframes only every 10 seconds or on request (`requestKeyframe`).
+  `AnnexB` converts the output to start-code delimited NAL units with
+  parameter sets in front of every keyframe, which is what the network and
+  the iPad decoder consume.
+- `CaptureRecorder` writes the encoded samples into a `.mov` without
+  re-encoding, so the file is exactly what will be streamed.
+- `SyntheticFrameSource` generates a moving test pattern so the encoder and
+  recorder can be tested without Screen Recording permission.
+- Resolution comes from the quality preset: Performance 50%, Balanced 75%,
+  Quality 100% of the display's native pixel size.
+
+Scripted test, prints a one-line report and quits:
+
+```bash
+MACSTREAM_AUTOTEST=screen:5 ./MacStream.app/Contents/MacOS/MacStream
+```
+
+Use `synthetic:5` for the test pattern and append `:h264` to pick H.264.
+
+Measured on a 14-inch MacBook Pro at 2268×1472 HEVC: about 56 fps with
+0.5 ms capture delay and 13 ms encode time per frame. Encode time is the
+first thing tuned in the latency work below.
+
+## Streaming
+
+Connecting now starts the stream automatically: the Mac begins capturing when
+the handshake completes and stops when the iPad disconnects. The stream view
+shows the Mac display letterboxed; the toolbar's waveform button toggles the
+debug overlay (fps, bitrate, packet loss, control RTT, decode time, frames
+decoded and dropped, frame size).
+
+How video travels:
+
+- `helloAck` carries the host's UDP port. The iPad sends encrypted `HELLO`
+  datagrams there once a second; the first one tells the Mac where to send,
+  the rest act as keepalives. Unauthenticated datagrams are ignored.
+- Every datagram is `sequence || ChaCha20-Poly1305(payload) || tag` under a
+  key derived from the pairing PSK (`VideoCrypto`). The nonce is built from
+  direction and sequence number, so nothing is reused across directions.
+- Frames are split into ≤1400-byte packets with a 20-byte header
+  (`FrameChunker`). The iPad reassembles by frame ID (`FrameAssembler`); any
+  frame still incomplete when a newer one completes is dropped, the overlay
+  counts it, and the iPad asks for a keyframe over the control channel (at
+  most four requests a second). Non-keyframes are skipped until it arrives.
+- `VideoDecoder` rebuilds the format description from the in-band
+  parameter sets and decodes synchronously with VideoToolbox; `VideoRenderer`
+  enqueues each image on an `AVSampleBufferDisplayLayer` with
+  "display immediately", so nothing is buffered.
+- Changing the quality preset on the iPad restarts capture at the new size;
+  the decoder picks up the new parameter sets from the next keyframe.
+
+Simulator automation (environment variables passed with `SIMCTL_CHILD_`):
+
+```bash
+SIMCTL_CHILD_MACSTREAM_AUTOCONNECT=123456 SIMCTL_CHILD_MACSTREAM_DEBUG_OVERLAY=1 xcrun simctl launch booted com.samarth.macstream.client
+```
+
+Measured Mac → iPad simulator on the same machine: 0 % loss, 0.6 ms RTT,
+3 ms decode at 2268×1472 HEVC. See Latency tuning below.
+
+## Input control
+
+The stream view captures input and sends it over the control channel as
+`InputEvent`s in normalized coordinates (0...1 across the letterboxed video),
+so the mapping stays exact whatever the iPad and Mac resolutions are. The Mac
+converts them to CGEvents on the captured display. Accessibility permission
+is required; without it the host logs "Input ignored" and drops events.
+
+| iPad | Mac |
+|---|---|
+| One finger tap | Left click (double-tap = double click) |
+| One finger drag (after 8 pt) | Click and drag |
+| Two finger tap | Right click |
+| Two finger pan | Scroll, natural direction, pixel precise |
+| Pinch | Command-plus / Command-minus steps (macOS has no public pinch injection) |
+| Apple Pencil | Precise pointer, 2 pt drag threshold; hover moves the pointer on iPads that support it |
+| Trackpad / mouse | Pointer moves on hover, primary click, secondary click, two finger scroll |
+| Hardware keyboard | Key down/up with modifiers; HID usages mapped to Mac key codes (`KeyCodeMap`) |
+| On-screen keyboard (toolbar toggle) | Typed as Unicode text; Return and Delete as keys |
+| Three finger swipe left / right | Previous / next Space (⌃← / ⌃→) |
+| Three finger swipe up / down | Mission Control / App Exposé (⌃↑ / ⌃↓) |
+| Two finger swipe from the left / right edge | Back / Forward (⌘[ / ⌘]) |
+| Three finger tap, or the bottom handle | Show or hide the floating toolbar |
+
+**Without a hardware keyboard.** The ⌘ button in the toolbar opens a strip
+with ⌘ ⌥ ⌃ ⇧, Esc, Tab and the arrow keys. Tap a modifier to latch it for the
+next key or click (⌘ then tap a file is a ⌘-click; ⌘ then "c" on the
+on-screen keyboard is ⌘C), or hold it to lock it until tapped again. While a
+modifier is latched, on-screen typing is sent as key presses instead of
+text so shortcuts fire. The options menu (sliders icon) has quality, the
+debug overlay, and *Invert scroll direction* for when the Mac's natural
+scrolling preference makes two-finger scrolling feel backwards.
+
+**What iPadOS keeps for itself.** Three-finger (and four-finger) trackpad
+swipes, ⌘Tab, ⌘Space, ⌘H, ⌘⇧3/4 and every Globe combination are handled by
+iPadOS before any app sees them, so they cannot be forwarded. Stand-ins:
+
+| Mac action | On the iPad |
+|---|---|
+| Switch Space | ⌃← / ⌃→ on the keyboard, or hold ⌃ and two-finger swipe left/right on the trackpad, or three-finger swipe on the screen |
+| Mission Control / App Exposé | ⌃↑ / ⌃↓, or hold ⌃ and two-finger swipe up/down, or three-finger swipe on the screen |
+| ⌘Tab | ⌥Tab |
+| ⌘Space (Spotlight) | ⌥Space |
+| Back / Forward | Two-finger swipe from the screen edge, or ⌘[ / ⌘] |
+
+**Magic Keyboard.** The trackpad pointer maps absolutely onto the Mac
+display and the iPad's own pointer is hidden over the stream, so only the
+Mac's cursor shows. Click, click-and-drag (1 pt threshold), two-finger
+secondary click, two-finger scroll and pinch all work from the trackpad.
+Hardware keys auto-repeat like on a Mac (400 ms, then 50 ms). iPadOS keeps
+⌘Tab, ⌘Space and ⌘H for itself and never delivers them to apps, so by
+default ⌥Tab and ⌥Space are sent to the Mac as ⌘Tab and ⌘Space (switch it
+off in the options menu). The hardware keyboard shortcut bar is suppressed.
+
+Known gap: pinch is a stepped approximation.
+
+Testing without touching the real desktop: run the host with
+`MACSTREAM_INPUT_DRYRUN=1` and it logs each event (type, display point,
+click count, key code) instead of posting it.
+
+## Pairing and security
+
+**First time.** Click the MacStream menu bar icon and choose *Pair a new
+iPad…* (the Mac does this on its own while nothing is paired). A six-digit
+code appears for two minutes. On the iPad the Mac shows as "Ready to pair";
+tap it and enter the code. That is the last time the code is needed.
+
+**Every time after.** The Mac appears as "Paired"; one tap connects.
+
+What happens underneath:
+
+1. The code and the Mac's ID derive a temporary TLS pre-shared key. Only a
+   Mac in pairing mode accepts it, the code is retired after one successful
+   pairing, and after fifteen failed handshakes (about five guesses) a new
+   code replaces it.
+2. Over that encrypted session the Mac sends `pairingComplete` with a
+   256-bit long-term key derived from a secret in the Mac's Keychain. The
+   iPad stores it in its Keychain under the Mac's ID.
+3. The Mac adds the iPad to its paired list (menu bar popover) and switches
+   its listener to the long-term key. From now on the handshake also checks
+   the iPad's device ID against that list; an unknown iPad is told it is not
+   paired and dropped, even if it somehow had the key.
+4. Input injection is only reachable on a session that passed both checks.
+
+Managing devices: the popover lists paired iPads with *Forget* (drops that
+iPad, and disconnects it if connected) and *Reset all pairings* (new secret;
+every iPad must enter a new code). On the iPad, swipe a paired Mac to forget
+it; if a stored key is rejected, the alert offers *Forget pairing*.
+
+Limits worth knowing: all paired iPads of one Mac share the same long-term
+key, so "Forget" relies on the device-ID check rather than a per-device key.
+Per-device keys need TLS PSK identity selection, which is on the list if a
+second iPad ever matters. The code has about 20 bits of entropy; the
+pairing window, the one-time use and the rotation after failed attempts
+are what make guessing impractical on a local network.
+
+Environment for automation: `MACSTREAM_RESET_PAIRING=1` clears the host's
+pairings at launch; `MACSTREAM_PAIRING_CODE=123456` starts in pairing mode
+with a fixed code.
+
+## Latency tuning
+
+**Measuring.** The overlay's first line is true capture-to-display latency.
+It works without any wall-clock agreement: every ping/pong carries the Mac's
+monotonic clock, `ClockSync` keeps the offset from the sample with the
+smallest round trip (NTP style), and each video packet carries the capture
+time in the Mac's clock. The breakdown below it comes from `hostStats`
+(capture delay and encode time, sent once a second) and the arrival time on
+the iPad; "Network+queue" is what is left after subtracting the Mac's share.
+Numbers on the left of ⇠ are the iPad's, on the right the Mac's.
+
+Measured Mac → iPad simulator on the same machine (so network is ~0 and
+these are the pipeline's own costs):
+
+| Preset | Size | End to end | Capture | Encode | Network | Decode |
+|---|---|---|---|---|---|---|
+| Balanced (75 %) | 2268×1472 | 20 ms | 3 ms | 12.7 ms | 1.5 ms | 2.8 ms |
+| Performance (50 %) | 1512×982 | 12 ms | 4 ms | 7.5 ms | 0 ms | 2.7 ms |
+
+Hardware HEVC encode is the largest stage; it scales with pixel count, so the
+quality preset is the main latency knob. Real Wi-Fi adds the air time of each
+frame (a 100 KB frame at 200 Mb/s is 4 ms) plus jitter; measure it on the
+real iPad with the overlay and compare against the 50 ms target.
+
+**Loss recovery, in order of preference.**
+
+1. *Selective retransmission.* A gap below the chunk that just arrived, or
+   an older frame still pending when a newer one's packet shows up, means
+   loss (LAN packets almost never reorder). The iPad sends `nack` over the
+   reliable channel for exactly those chunks; the Mac keeps the last eight
+   frames' packets and resends them with their original sequence numbers.
+   Each chunk is requested once. The overlay's "N back" counts recoveries.
+2. *Drop and keyframe.* If a frame is still incomplete when a newer one
+   completes, it is dropped, the iPad skips non-keyframes and asks for an
+   IDR frame (`requestKeyframe`, at most four times a second from the iPad,
+   honoured at most every 100 ms on the Mac).
+3. *Backpressure.* If more than 300 packets are waiting on the Mac's UDP
+   send queue, non-keyframes are skipped rather than queued, so a slow link
+   adds loss, never latency.
+
+With 3 % random packet loss simulated (`MACSTREAM_SIMULATE_LOSS=3`), before
+retransmission 84 of 150 frames were dropped and the bitrate fell to the
+3 Mb/s floor; with it, 14 of 434 frames were dropped, 122 of 137 lost packets
+were recovered, end-to-end stayed at 19 ms and the bitrate held between 12
+and 15 Mb/s.
+
+**Adaptive bitrate.** The iPad reports unrecovered loss, dropped frames,
+frame rate, decode time and round trip once a second (`clientStats`).
+`BitrateController` cuts the encoder target by 20 % when unrecovered loss
+exceeds 1 % or two or more frames were dropped in a second, holds at least a
+second between changes, never goes below 3 Mb/s, and steps up 15 % after
+four clean seconds until it is back at the preset's target. Bitrate changes
+apply live through VideoToolbox without restarting capture. The Mac popover
+shows the link numbers while connected.
+
+Environment knobs for tuning sessions: `MACSTREAM_QUALITY=performance`
+picks the start preset on the host; `MACSTREAM_SIMULATE_LOSS=<percent>`
+drops outgoing packets at random.
+
+## Polish and extras
+
+**Settings window** (gear in the popover, or ⌘,): open at login, display
+mode and which display to mirror, default quality, codec, 30 or 60 fps,
+cursor on or off, system audio, clipboard sharing, developer tools. Changes
+apply live; capture restarts if a session is running. The popover itself is
+now status, pairing, quality and mode, link numbers, and actions; the
+capture test, connection test and log only appear with developer tools on.
+
+**System audio.** ScreenCaptureKit captures the Mac's audio alongside the
+screen (the Mac keeps playing it too). It travels as 48 kHz stereo 16-bit
+PCM on the same encrypted UDP channel, tagged with its own codec value, and
+`AudioPlayer` on the iPad schedules each chunk straight onto an
+AVAudioEngine player node: no codec, no jitter buffer, so a lost packet is a
+few milliseconds of silence. The toolbar's speaker button mutes it.
+
+**Clipboard.** Text only, both ways, while connected. The Mac polls
+`NSPasteboard` twice a second; the iPad watches `UIPasteboard` and re-checks
+when the app returns to the foreground. Each side remembers the last text it
+sent or received, so nothing loops.
+
+**Extended display (experimental).** With the mode set to *Extend*, the Mac
+creates a virtual display sized to the iPad's screen when it connects (Retina
+when the iPad is), captures that display instead of a real one, and removes
+it on disconnect. The iPad's touches then land on that display. This uses
+the private `CGVirtualDisplay` interface, declared in
+`CGVirtualDisplayPrivate.h` and used only from `VirtualDisplay.swift`; if the
+classes are missing or refuse the request, the Mac logs it and mirrors
+instead. Verified on macOS 27: the display appears in System Information as
+"MacStream iPad" at the iPad's native size.
+
+Known gaps left for later: key auto-repeat, pinch as a true gesture,
+per-device pairing keys, audio clock drift over very long sessions.
